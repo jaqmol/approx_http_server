@@ -30,6 +30,7 @@ type ApproxHTTPServer struct {
 
 // InitRequestProxy ...
 func (a *ApproxHTTPServer) InitRequestProxy() {
+	writer := bufio.NewWriter(a.conf.Outputs[0])
 	http.HandleFunc(a.conf.Envs["ENDPOINT"], func(w http.ResponseWriter, r *http.Request) {
 		id := a.registerRespWriterWithID(w)
 
@@ -46,17 +47,18 @@ func (a *ApproxHTTPServer) InitRequestProxy() {
 			return
 		}
 
-		reqMsgBytes = append(reqMsgBytes, []byte("\n")...)
+		reqMsgBytes = append(reqMsgBytes, '\n')
 
-		nwr, err := a.conf.Outputs[0].Write(reqMsgBytes)
+		_, err = writer.Write(reqMsgBytes)
 		if err != nil {
 			specError := fmt.Errorf("Error writing request message to output: %v", err.Error())
 			LogErrorMessage(&id, -5007, specError)
 			return
 		}
-		if nwr < len(reqMsgBytes) {
-			specError := fmt.Errorf("Only %v of %v bytes written to output", nwr, len(reqMsgBytes))
-			LogErrorMessage(&id, -5008, specError)
+		err = writer.Flush()
+		if err != nil {
+			specError := fmt.Errorf("Error flushing written message to output: %v", err.Error())
+			LogErrorMessage(&id, -5007, specError)
 			return
 		}
 	})
