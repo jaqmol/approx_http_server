@@ -8,12 +8,17 @@ import (
 	"io"
 	"net/http"
 	"sync"
+
+	"github.com/jaqmol/approx/errormsg"
+	"github.com/jaqmol/approx/processorconf"
 )
 
 // NewApproxHTTPServer ...
-func NewApproxHTTPServer(conf *ProcessorConfig) *ApproxHTTPServer {
+func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
 	return &ApproxHTTPServer{
 		conf:        conf,
+		output:      conf.Outputs[0],
+		input:       conf.Inputs[0],
 		idCounter:   0,
 		respWrForID: make(map[int]http.ResponseWriter),
 		mutex:       &sync.Mutex{},
@@ -22,7 +27,9 @@ func NewApproxHTTPServer(conf *ProcessorConfig) *ApproxHTTPServer {
 
 // ApproxHTTPServer ...
 type ApproxHTTPServer struct {
-	conf        *ProcessorConfig
+	conf        *processorconf.ProcessorConf
+	output      *bufio.Writer
+	input       *bufio.Reader
 	idCounter   int
 	respWrForID map[int]http.ResponseWriter
 	mutex       *sync.Mutex
@@ -30,35 +37,31 @@ type ApproxHTTPServer struct {
 
 // InitRequestProxy ...
 func (a *ApproxHTTPServer) InitRequestProxy() {
-	writer := bufio.NewWriter(a.conf.Outputs[0])
 	http.HandleFunc(a.conf.Envs["ENDPOINT"], func(w http.ResponseWriter, r *http.Request) {
 		id := a.registerRespWriterWithID(w)
 
 		reqMsg, err := RequestMessageFromHTTPRequest(id, r)
 		if err != nil {
-			LogErrorMessage(&id, -5005, err)
+			errormsg.Log("approx_http_server", &id, -5005, err.Error())
 			return
 		}
 
 		reqMsgBytes, err := json.Marshal(reqMsg)
 		if err != nil {
-			specError := fmt.Errorf("Error marshalling request message: %v", err.Error())
-			LogErrorMessage(&id, -5006, specError)
+			errormsg.Log("approx_http_server", &id, -5006, "Error marshalling request message: %v", err.Error())
 			return
 		}
 
 		reqMsgBytes = append(reqMsgBytes, '\n')
-
-		_, err = writer.Write(reqMsgBytes)
+		_, err = a.output.Write(reqMsgBytes)
 		if err != nil {
-			specError := fmt.Errorf("Error writing request message to output: %v", err.Error())
-			LogErrorMessage(&id, -5007, specError)
+			errormsg.Log("approx_http_server", &id, -5007, "Error writing request message to output: %v", err.Error())
 			return
 		}
-		err = writer.Flush()
+
+		err = a.output.Flush()
 		if err != nil {
-			specError := fmt.Errorf("Error flushing written message to output: %v", err.Error())
-			LogErrorMessage(&id, -5007, specError)
+			errormsg.Log("approx_http_server", &id, -5007, "Error flushing written message to output: %v", err.Error())
 			return
 		}
 	})
@@ -69,19 +72,16 @@ func (a *ApproxHTTPServer) StartServer() {
 	addr := fmt.Sprintf(":%v", a.conf.Envs["PORT"])
 	err := http.ListenAndServe(addr, nil)
 	if err != nil {
-		specError := fmt.Errorf("Error starting server: %v", err.Error())
-		LogFatalErrorMessage(nil, -5009, specError)
+		errormsg.LogFatal("approx_http_server", nil, -5009, "Error starting server: %v", err.Error())
 	}
 }
 
 // InitResponseListener ...
 func (a *ApproxHTTPServer) InitResponseListener() {
-	reader := bufio.NewReader(a.conf.Inputs[0])
 	var hardErr error
 	for hardErr == nil {
 		var resMsgBytes []byte
-		resMsgBytes, hardErr = reader.ReadBytes('\n')
-		// = a.conf.Inputs[0].Read(resMsgBuffer)
+		resMsgBytes, hardErr = a.input.ReadBytes('\n')
 		if hardErr != nil {
 			return
 		}
@@ -89,48 +89,45 @@ func (a *ApproxHTTPServer) InitResponseListener() {
 		var resMsg ResponseMessage
 		err := json.Unmarshal(resMsgBytes, &resMsg)
 		if err != nil {
-			specError := fmt.Errorf("Error unmarshalling response message: %v", err.Error())
-			LogErrorMessage(nil, -5010, specError)
+			errormsg.Log("approx_http_server", nil, -5010, "Error unmarshalling response message: %v", err.Error())
 			continue
 		}
 
-		w := a.unregisterRespWriter(resMsg.ID)
-
-		for key, values := range resMsg.Result.Header {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-
-		w.WriteHeader(resMsg.Result.Status)
+		w := a.writeHeadersWithRespWriter(&resMsg)
 
 		body, err := base64.StdEncoding.DecodeString(resMsg.Result.BodyB64)
 		if err != nil {
-			specError := fmt.Errorf("Error decoding base64 body: %v", err.Error())
-			LogErrorMessage(nil, -5011, specError)
+			errormsg.Log("approx_http_server", nil, -5011, "Error decoding base64 body: %v", err.Error())
 			continue
 		}
 
 		nwr, err := w.Write(body)
 		if err != nil {
-			specError := fmt.Errorf("Error writing response body: %v", err.Error())
-			LogErrorMessage(nil, -5012, specError)
+			errormsg.Log("approx_http_server", nil, -5012, "Error writing response body: %v", err.Error())
 			continue
 		}
 		if nwr < len(body) {
-			specError := fmt.Errorf("Only %v of %v bytes written to response", nwr, len(body))
-			LogErrorMessage(nil, -5013, specError)
+			errormsg.Log("approx_http_server", nil, -5013, "Only %v of %v bytes written to response", nwr, len(body))
 			continue
 		}
 	}
 
 	if hardErr == io.EOF {
-		specError := fmt.Errorf("Unexpected EOL listening for response input")
-		LogFatalErrorMessage(nil, -5014, specError)
+		errormsg.LogFatal("approx_http_server", nil, -5014, "Unexpected EOL listening for response input")
 	} else {
-		specError := fmt.Errorf("Unexpected error listening for response input: %v", hardErr.Error())
-		LogFatalErrorMessage(nil, -5015, specError)
+		errormsg.LogFatal("approx_http_server", nil, -5015, "Unexpected error listening for response input: %v", hardErr.Error())
 	}
+}
+
+func (a *ApproxHTTPServer) writeHeadersWithRespWriter(resMsg *ResponseMessage) http.ResponseWriter {
+	w := a.unregisterRespWriter(resMsg.ID)
+	for key, values := range resMsg.Result.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resMsg.Result.Status)
+	return w
 }
 
 func (a *ApproxHTTPServer) registerRespWriterWithID(w http.ResponseWriter) int {
