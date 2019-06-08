@@ -16,6 +16,7 @@ import (
 // NewApproxHTTPServer ...
 func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
 	return &ApproxHTTPServer{
+		errMsg:      &errormsg.ErrorMsg{Processor: "approx_http_server"},
 		conf:        conf,
 		output:      conf.Outputs[0],
 		input:       conf.Inputs[0],
@@ -27,6 +28,7 @@ func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
 
 // ApproxHTTPServer ...
 type ApproxHTTPServer struct {
+	errMsg      *errormsg.ErrorMsg
 	conf        *processorconf.ProcessorConf
 	output      *bufio.Writer
 	input       *bufio.Reader
@@ -42,26 +44,26 @@ func (a *ApproxHTTPServer) InitRequestProxy() {
 
 		reqMsg, err := RequestMessageFromHTTPRequest(id, r)
 		if err != nil {
-			errormsg.Log("approx_http_server", &id, -5005, err.Error())
+			a.errMsg.Log(&id, err.Error())
 			return
 		}
 
 		reqMsgBytes, err := json.Marshal(reqMsg)
 		if err != nil {
-			errormsg.Log("approx_http_server", &id, -5006, "Error marshalling request message: %v", err.Error())
+			a.errMsg.Log(&id, "Error marshalling request message: %v", err.Error())
 			return
 		}
 
 		reqMsgBytes = append(reqMsgBytes, '\n')
 		_, err = a.output.Write(reqMsgBytes)
 		if err != nil {
-			errormsg.Log("approx_http_server", &id, -5007, "Error writing request message to output: %v", err.Error())
+			a.errMsg.Log(&id, "Error writing request message to output: %v", err.Error())
 			return
 		}
 
 		err = a.output.Flush()
 		if err != nil {
-			errormsg.Log("approx_http_server", &id, -5007, "Error flushing written message to output: %v", err.Error())
+			a.errMsg.Log(&id, "Error flushing written message to output: %v", err.Error())
 			return
 		}
 	})
@@ -72,7 +74,7 @@ func (a *ApproxHTTPServer) StartServer() {
 	addr := fmt.Sprintf(":%v", a.conf.Envs["PORT"])
 	err := http.ListenAndServe(addr, nil)
 	if err != nil {
-		errormsg.LogFatal("approx_http_server", nil, -5009, "Error starting server: %v", err.Error())
+		a.errMsg.LogFatal(nil, "Error starting server: %v", err.Error())
 	}
 }
 
@@ -89,7 +91,7 @@ func (a *ApproxHTTPServer) InitResponseListener() {
 		var resMsg ResponseMessage
 		err := json.Unmarshal(resMsgBytes, &resMsg)
 		if err != nil {
-			errormsg.Log("approx_http_server", nil, -5010, "Error unmarshalling response message: %v", err.Error())
+			a.errMsg.Log(nil, "Error unmarshalling response message: %v", err.Error())
 			continue
 		}
 
@@ -97,25 +99,25 @@ func (a *ApproxHTTPServer) InitResponseListener() {
 
 		body, err := base64.StdEncoding.DecodeString(resMsg.Result.BodyB64)
 		if err != nil {
-			errormsg.Log("approx_http_server", nil, -5011, "Error decoding base64 body: %v", err.Error())
+			a.errMsg.Log(nil, "Error decoding base64 body: %v", err.Error())
 			continue
 		}
 
 		nwr, err := w.Write(body)
 		if err != nil {
-			errormsg.Log("approx_http_server", nil, -5012, "Error writing response body: %v", err.Error())
+			a.errMsg.Log(nil, "Error writing response body: %v", err.Error())
 			continue
 		}
 		if nwr < len(body) {
-			errormsg.Log("approx_http_server", nil, -5013, "Only %v of %v bytes written to response", nwr, len(body))
+			a.errMsg.Log(nil, "Only %v of %v bytes written to response", nwr, len(body))
 			continue
 		}
 	}
 
 	if hardErr == io.EOF {
-		errormsg.LogFatal("approx_http_server", nil, -5014, "Unexpected EOL listening for response input")
+		a.errMsg.LogFatal(nil, "Unexpected EOL listening for response input")
 	} else {
-		errormsg.LogFatal("approx_http_server", nil, -5015, "Unexpected error listening for response input: %v", hardErr.Error())
+		a.errMsg.LogFatal(nil, "Unexpected error listening for response input: %v", hardErr.Error())
 	}
 }
 
