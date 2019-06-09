@@ -85,7 +85,7 @@ func (a *ApproxHTTPServer) InitResponseListener() {
 		var resMsgBytes []byte
 		resMsgBytes, hardErr = a.input.ReadBytes('\n')
 		if hardErr != nil {
-			return
+			break
 		}
 
 		var resMsg ResponseMessage
