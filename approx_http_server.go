@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,17 +8,17 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/jaqmol/approx/errormsg"
+	"github.com/jaqmol/approx/axmsg"
 	"github.com/jaqmol/approx/processorconf"
 )
 
 // NewApproxHTTPServer ...
 func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
 	return &ApproxHTTPServer{
-		errMsg:      &errormsg.ErrorMsg{Processor: "approx_http_server"},
+		errMsg:      &axmsg.Errors{Source: "approx_http_server"},
 		conf:        conf,
-		output:      conf.Outputs[0],
-		input:       conf.Inputs[0],
+		output:      axmsg.NewWriter(conf.Outputs[0]),
+		input:       axmsg.NewReader(conf.Inputs[0]),
 		idCounter:   0,
 		respWrForID: make(map[int]http.ResponseWriter),
 		mutex:       &sync.Mutex{},
@@ -28,10 +27,10 @@ func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
 
 // ApproxHTTPServer ...
 type ApproxHTTPServer struct {
-	errMsg      *errormsg.ErrorMsg
+	errMsg      *axmsg.Errors
 	conf        *processorconf.ProcessorConf
-	output      *bufio.Writer
-	input       *bufio.Reader
+	output      *axmsg.Writer
+	input       *axmsg.Reader
 	idCounter   int
 	respWrForID map[int]http.ResponseWriter
 	mutex       *sync.Mutex
@@ -42,28 +41,10 @@ func (a *ApproxHTTPServer) InitRequestProxy() {
 	http.HandleFunc(a.conf.Envs["ENDPOINT"], func(w http.ResponseWriter, r *http.Request) {
 		id := a.registerRespWriterWithID(w)
 
-		reqMsg, err := RequestMessageFromHTTPRequest(id, r)
-		if err != nil {
-			a.errMsg.Log(&id, err.Error())
-			return
-		}
-
-		reqMsgBytes, err := json.Marshal(reqMsg)
-		if err != nil {
-			a.errMsg.Log(&id, "Error marshalling request message: %v", err.Error())
-			return
-		}
-
-		reqMsgBytes = append(reqMsgBytes, '\n')
-		_, err = a.output.Write(reqMsgBytes)
+		reqAction, err := RequestActionFromHTTPRequest(id, r)
+		err = a.output.Write(reqAction)
 		if err != nil {
 			a.errMsg.Log(&id, "Error writing request message to output: %v", err.Error())
-			return
-		}
-
-		err = a.output.Flush()
-		if err != nil {
-			a.errMsg.Log(&id, "Error flushing written message to output: %v", err.Error())
 			return
 		}
 	})
@@ -82,28 +63,20 @@ func (a *ApproxHTTPServer) StartServer() {
 func (a *ApproxHTTPServer) InitResponseListener() {
 	var hardErr error
 	for hardErr == nil {
-		var resMsgBytes []byte
-		resMsgBytes, hardErr = a.input.ReadBytes('\n')
+		action, data, hardErr := a.readResponseActionAndData()
 		if hardErr != nil {
 			break
 		}
 
-		var resMsg ResponseMessage
-		err := json.Unmarshal(resMsgBytes, &resMsg)
-		if err != nil {
-			a.errMsg.Log(nil, "Error unmarshalling response message: %v", err.Error())
-			continue
-		}
+		writer := a.writeHeadersWithRespWriter(*action.ID, data)
 
-		w := a.writeHeadersWithRespWriter(&resMsg)
-
-		body, err := base64.StdEncoding.DecodeString(resMsg.Result.BodyB64)
+		body, err := base64.StdEncoding.DecodeString(data.BodyB64)
 		if err != nil {
 			a.errMsg.Log(nil, "Error decoding base64 body: %v", err.Error())
 			continue
 		}
 
-		nwr, err := w.Write(body)
+		nwr, err := writer.Write(body)
 		if err != nil {
 			a.errMsg.Log(nil, "Error writing response body: %v", err.Error())
 			continue
@@ -121,14 +94,28 @@ func (a *ApproxHTTPServer) InitResponseListener() {
 	}
 }
 
-func (a *ApproxHTTPServer) writeHeadersWithRespWriter(resMsg *ResponseMessage) http.ResponseWriter {
-	w := a.unregisterRespWriter(resMsg.ID)
-	for key, values := range resMsg.Result.Header {
+func (a *ApproxHTTPServer) readResponseActionAndData() (*axmsg.Action, *ResponseData, error) {
+	action, rawData, err := a.input.Read()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var data ResponseData
+	err = json.Unmarshal(rawData, &data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return action, &data, nil
+}
+
+func (a *ApproxHTTPServer) writeHeadersWithRespWriter(id int, data *ResponseData) http.ResponseWriter {
+	w := a.unregisterRespWriter(id)
+	for key, values := range data.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
-	w.WriteHeader(resMsg.Result.Status)
+	w.WriteHeader(data.Status)
 	return w
 }
 
