@@ -17,7 +17,7 @@ func RequestActionFromHTTPRequest(id int, r *http.Request) (*axmsg.Action, error
 	return axmsg.NewAction(
 		&id,
 		nil,
-		"http_request",
+		"http-request",
 		nil,
 		RequestData{
 			Method:  r.Method,
