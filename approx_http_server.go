@@ -8,17 +8,18 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/jaqmol/approx/axenvs"
 	"github.com/jaqmol/approx/axmsg"
-	"github.com/jaqmol/approx/processorconf"
 )
 
 // NewApproxHTTPServer ...
-func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
+func NewApproxHTTPServer(envs *axenvs.Envs) *ApproxHTTPServer {
+	ins, outs := envs.InsOuts()
 	return &ApproxHTTPServer{
 		errMsg:      &axmsg.Errors{Source: "approx_http_server"},
-		conf:        conf,
-		output:      axmsg.NewWriter(conf.Outputs[0]),
-		input:       axmsg.NewReader(conf.Inputs[0]),
+		envs:        envs,
+		output:      axmsg.NewWriter(&outs[0]),
+		input:       axmsg.NewReader(&ins[0]),
 		idCounter:   0,
 		respWrForID: make(map[int]http.ResponseWriter),
 		mutex:       &sync.Mutex{},
@@ -28,7 +29,7 @@ func NewApproxHTTPServer(conf *processorconf.ProcessorConf) *ApproxHTTPServer {
 // ApproxHTTPServer ...
 type ApproxHTTPServer struct {
 	errMsg      *axmsg.Errors
-	conf        *processorconf.ProcessorConf
+	envs        *axenvs.Envs
 	output      *axmsg.Writer
 	input       *axmsg.Reader
 	idCounter   int
@@ -38,21 +39,24 @@ type ApproxHTTPServer struct {
 
 // InitRequestProxy ...
 func (a *ApproxHTTPServer) InitRequestProxy() {
-	http.HandleFunc(a.conf.Envs["ENDPOINT"], func(w http.ResponseWriter, r *http.Request) {
-		id := a.registerRespWriterWithID(w)
+	http.HandleFunc(
+		a.envs.Required["ENDPOINT"],
+		func(w http.ResponseWriter, r *http.Request) {
+			id := a.registerRespWriterWithID(w)
 
-		reqAction, err := RequestActionFromHTTPRequest(id, r)
-		err = a.output.Write(reqAction)
-		if err != nil {
-			a.errMsg.Log(&id, "Error writing request message to output: %v", err.Error())
-			return
-		}
-	})
+			reqAction, err := RequestActionFromHTTPRequest(id, r)
+			err = a.output.Write(reqAction)
+			if err != nil {
+				a.errMsg.Log(&id, "Error writing request message to output: %v", err.Error())
+				return
+			}
+		},
+	)
 }
 
 // StartServer ...
 func (a *ApproxHTTPServer) StartServer() {
-	addr := fmt.Sprintf(":%v", a.conf.Envs["PORT"])
+	addr := fmt.Sprintf(":%v", a.envs.Required["PORT"])
 	err := http.ListenAndServe(addr, nil)
 	if err != nil {
 		a.errMsg.LogFatal(nil, "Error starting server: %v", err.Error())
